@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+generated-images/
+*.zip
+.selftest-tmp/
