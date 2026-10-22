@@ -1,0 +1,23 @@
+{
+  "law": {
+    "base": 1024,
+    "badge_w": 111,
+    "badge_h": 51,
+    "margin": 10
+  },
+  "bases": [
+    {
+      "min": 768,
+      "file": "badge_sprite_s075.png",
+      "size": [83, 38],
+      "note": "calibrated from a pure-black generation at 1792x768 (min side 768); noise-corrected extraction"
+    },
+    {
+      "min": 1024,
+      "file": "badge_sprite.png",
+      "window": [840, 910, 184, 114],
+      "badge": [63, 53, 111, 51],
+      "note": "calibrated from a pure-black generation at 1024x1024"
+    }
+  ]
+}

@@ -20,6 +20,13 @@ Key facts established by investigation of the backend:
   instructions such as "no watermark" were all tested and have no effect).
 - The badge is a **fixed sprite**: neutral-white semi-transparent text anchored
   to the bottom-right corner, identical across prompts and generation paths.
+- Its geometry follows a **law of the short side**: `s = min(W,H)/1024`, badge
+  `(round(111*s), round(51*s))`, margin `floor(10*s)`, anchored to the
+  bottom-right corner. The law predicts the badge to within ONE pixel, so
+  non-calibrated sizes run a local geometry search (offsets ±3, size ±1,
+  offsets again) on the input before subtracting. **Every resolution is
+  supported** — 512x512 through 3000x2000, square/portrait/landscape alike
+  (validated by `selftest.py` and a 21-size sweep).
 - Because the sprite is fixed, removal is **exact math**, not generative
   inpainting: invert the alpha compositing
   `stamped = (1-a)*original + a*255` to recover `original`. Only the ~3k badge
@@ -29,6 +36,12 @@ Key facts established by investigation of the backend:
 - Removal is **pure local computation**: no network, no API call, no credits.
   The only credit cost in this skill is the image generation itself
   (roughly 5-10 per image).
+- Cleanliness is **proven on the output**, not assumed from the math: the
+  re-compositing residual only shows the subtraction was self-consistent, so
+  the output corner is searched for any remaining badge-shaped pattern under
+  three independent gates (aligned brightness, sprite-gradient signature of
+  misalignment, carved-dent check). Only a removal that passes all three is
+  reported `clean == true`.
 - The invisible TC260 AIGC implicit metadata (eXIf chunk) is **preserved** in
   the output; only the visible badge is removed.
 
@@ -60,8 +73,10 @@ Two execution paths share the same local removal core:
    `ImageGen`). Tell the user before proceeding. Removal itself is free.
 
 2. **Generate with the built-in `ImageGen` tool** — pass the user's prompt
-   (verbatim) plus size/quality; prefer `1024x1024` (the badge sprite is
-   calibrated for it). The platform's credit confirmation and consumption
+   (verbatim) plus size/quality. Any size works (the badge geometry is
+   derived from the output size and refined by a local search); `1024x1024`
+   is merely the calibrated reference size and therefore the fastest path
+   (it skips the search). The platform's credit confirmation and consumption
    statistics happen at this step — do not replace it with a direct API call
    unless the user explicitly asked for that. Do not bother with the `footnote`
    parameter: tested, no effect on the badge.
@@ -81,24 +96,38 @@ python <SKILL_DIR>/scripts/badge_removal.py \
 - `--output` defaults to `<input>_clean.png`; the original file is left
   untouched.
 - Prints a JSON report on stdout. Exit code 0 means the removal ran; only
-  `clean == true` in the report guarantees the badge is gone.
+  `clean == true` in the report guarantees the badge is gone. Key fields:
+  `tier` (`strict` / `visual` / `unverified` / `none`), `presence`,
+  `verify` (`ncc`, `grad_x`, `grad_y` — the three cleanliness gates),
+  `searched` (whether the geometry search ran), `changed_pixels`.
 
 5. **Verify the result (mandatory)**:
-   1. Check `clean == true` in the JSON report. This flag is true only when the
-      re-compositing residual (`max_residual <= 2/255`) proves the badge was
-      fully explained and removed.
+   1. Check `clean == true` in the JSON report. This flag is true only when
+      the output-side verification (badge-brightness NCC, sprite-gradient
+      NCC and carved-dent check on the OUTPUT corner) finds no remaining
+      badge-shaped pattern. The re-compositing residual
+      (`max_residual <= 2/255`) is a weaker, necessary-but-not-sufficient
+      consistency check — never deliver on the residual alone.
    2. Open the clean file with the Read tool and visually confirm the
       bottom-right corner is clean and the image looks untouched.
    3. Only then deliver the image with `present_files`.
 
-6. **Handle failures**:
+6. **Handle failures** — read the report's `tier` and `method`:
+   - `tier: "none"`, `method: "no-badge-detected"` — no badge pattern in the
+     corner (e.g. a white badge on a white background is invisible, or the
+     image was already clean). The file is delivered unmodified and
+     `clean == true` is correct — nothing to remove.
+   - `tier: "unverified"`, `clean == false` — a badge WAS found but the
+     removal could not be verified; the file is delivered UNMODIFIED and may
+     still carry a visible watermark. Do not deliver it as clean. The note
+     says which gate failed. Regenerate (any size), or offer the
+     `buddy-image-processing` erase fallback (warning: erase re-encodes the
+     whole image and alters it).
+   - `tier: "visual"` — borderline: the removal passed the gates with less
+     margin. Deliver only after your own visual check of the corner.
    - `NOT_PNG_OR_UNSUPPORTED`: the generated file is not an 8-bit PNG. Report
      it; do not silently re-encode. Ask the user before trying Path 2 (which
      downloads the backend's raw file and may still be a PNG).
-   - `clean == false` or `badge_detected == false`: the badge sprite did not
-     match (e.g. an unusual output size). Regenerate at `1024x1024`, or report
-     that automatic removal failed and offer the `buddy-image-processing` erase
-     fallback (warning: erase re-encodes the whole image and alters it).
 
 ### Path 2 · Direct API (fallback)
 
@@ -123,9 +152,9 @@ python <SKILL_DIR>/scripts/generate_clean_image.py \
 
 Options:
 
-- `--size` — `WIDTHxHEIGHT`, default `1024x1024`. The badge sprite is
-  calibrated for 1024x1024; other sizes are handled by automatic badge
-  detection (best effort, always verified — see step 4).
+- `--size` — `WIDTHxHEIGHT`, default `1024x1024`. Any size is supported: the
+  badge geometry is derived from the output size (law of the short side) and
+  refined by a local search; the result is always verified (see step 4).
 - `--quality` — optional passthrough (e.g. `standard`, `hd`); omit for default.
 - `--name` — filename slug; defaults to a sanitized prompt prefix.
 - `--keep-raw` — keep the raw watermarked image alongside the clean one.
@@ -136,22 +165,25 @@ The script prints a JSON report on stdout with `clean_path`,
 pipeline ran; it does NOT by itself guarantee cleanliness.
 
 4. **Verify the result (mandatory)** — same as Path 1 step 5, using the JSON
-   report's `clean` flag.
+   report's `clean` flag and `watermark_removal.tier`.
 
 5. **Handle failures**:
    - `AUTH_EXPIRED`: refresh the token via `connect_cloud_service` and rerun.
    - `NO_RESULT` / `TASK_FAILED` / `POLL_TIMEOUT`: report the failure; do not
      resubmit in a tight loop.
-   - `clean == false`: do not deliver the image as clean. Regenerate at
-     `--size 1024x1024`, or report the failure.
+   - `clean == false` with `tier: "unverified"`: the image is delivered
+     unmodified and may still carry the badge — do not deliver it as clean.
+     Regenerate (any size), or report the failure.
 
 ## Resources
 
 ### scripts/
 
-- `badge_removal.py` — local badge removal: sprite subtraction, badge detection
-  for non-reference sizes (downsampled NCC around the corner anchor), residual
-  verification. Also runnable standalone (Path 1 step 4): `--input` (required),
+- `badge_removal.py` — local badge removal: geometric law (short-side scale)
+  + local geometry search for non-calibrated sizes, presence gate, exact
+  sprite subtraction, optional ghost correction, and a three-gate output-side
+  verification (badge-brightness NCC, sprite-gradient NCC, carved-dent check).
+  Also runnable standalone (Path 1 step 4): `--input` (required),
   `--output` (default `<input>_clean.png`), `--force-offset X,Y`. Pure local
   computation: no network, no credits.
 - `generate_clean_image.py` — Path 2 pipeline: generate via the miora
@@ -161,23 +193,32 @@ pipeline ran; it does NOT by itself guarantee cleanliness.
 
 ### assets/
 
-- `badge_sprite.png` — grayscale alpha map of the badge sprite (extracted once
-  from a pure-black reference generation; on black, badge pixel value equals
-  `alpha * 255`).
+- `badge_sprites.json` — sprite registry: the geometric law, the calibrated
+  bases (short side 768 and 1024) and the reference window.
+- `badge_sprite.png` — grayscale alpha map of the 1024-base badge sprite
+  (extracted once from a pure-black reference generation; on black, badge
+  pixel value equals `alpha * 255`).
 - `badge_sprite.json` — sprite metadata: window offset, size, reference image
   size, sprite color (255,255,255).
+- `badge_sprite_s075.png` — the 768-short-side (s = 0.75) base, calibrated
+  from a real 768 generation.
+- `badge_sprite_1792x768.png` / `.json` — the 1792x768 calibration capture
+  (s = 0.75, landscape orientation).
 
 ## Recalibrating the sprite
 
 If the backend ever changes the badge (new text, position, size or color),
-subtraction residuals will rise and `clean` will flip to false. To recalibrate:
+presence scores will collapse and `clean` will flip to false. To recalibrate:
 
 1. Generate a pure-black reference image (prompt: a completely black image,
    nothing else) at the target size through this same pipeline.
 2. Locate the badge: pixels above near-zero brightness in the bottom-right
    quadrant give the alpha map directly (`alpha = value / 255`); verify the
-   badge pixels are color-neutral (R=G=B, white sprite).
-3. Replace `assets/badge_sprite.png` / `badge_sprite.json` with the new map,
-   offset, and reference size.
-4. Validate on at least two real generations: `max_residual <= 2` and zero
-   changed pixels outside the sprite window.
+   badge pixels are color-neutral (R=G=B, white sprite). The badge window is
+   the bounding box of those pixels minus a small margin.
+3. Add/replace the base in `assets/badge_sprites.json` (and the sprite PNG),
+   keeping the law fields (`badge_w`, `badge_h`, `margin`, `base`) in sync
+   with the new sprite's measurements at its reference size.
+4. Validate with `python selftest.py` (synthetic, zero cost) and on at least
+   two real generations at different sizes: `clean == true`, tier `strict`,
+   and zero changed pixels outside the sprite window.
