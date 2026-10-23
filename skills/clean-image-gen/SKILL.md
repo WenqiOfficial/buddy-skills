@@ -5,7 +5,6 @@ display_name_en: Watermark-Free AI Image (Dual-Path)
 version: 2.1.0
 agent_created: true
 description: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸（1024 母版 + lanczos 缩放复刻服务端渲染管线，非校准尺寸 alpha 误差约 1.7/255）；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径；生图本身与直接调用 ImageGen 完全一致（提示词正常优化）。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
-description_zh: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸（1024 母版 + lanczos 缩放复刻服务端渲染管线，非校准尺寸 alpha 误差约 1.7/255）；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径；生图本身与直接调用 ImageGen 完全一致（提示词正常优化）。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
 description_en: Watermark-free AI image generation (dual-path). Path 1 (default) — generate with the same WorkBuddy backend as the built-in ImageGen tool (model hy-image-3.5-wb), then remove the server-side "AI生成 / WORKBUDDY" badge locally by exact sprite subtraction; every pixel outside the badge is preserved bit-for-bit and any size is supported. Path 2 (--path native) — call the native Hunyuan AIART API with the official LogoAdd=0 parameter so the server adds no watermark at all (each side 512-2048, area <= 1024x1024). Always ask the user which path to use before generating. Triggers — watermark-free, no watermark, generate an image, AI drawing, clean image. Not for removing watermarks from user-supplied existing images (use buddy-image-processing erase), video (VideoGen), or 3D models (buddy-multimodal-generation).
 ---
 
@@ -29,11 +28,10 @@ Key facts established by investigation of the backend:
   optional **native Hunyuan AIART backend** (`--path native`) where the
   official `LogoAdd=0` parameter makes the server add **no watermark at all**
   (verified 2026-10-23 at 1024x1024, 1280x720 and 768x1024 — corner visually
-  clean, sprite detector `tier: "none"`). Both cost the same credits (one
-  generation); the native path is limited to each side in [512, 2048] and
-  area <= 1024x1024, and its output still runs through the same local
-  verification as a safety net. The two backends are **different model
-  generations** (hy-image-3.5-wb vs HunyuanImage 3.0), so image style may
+  clean, sprite detector `tier: "none"`). The native path is limited to each
+  side in [512, 2048] and area <= 1024x1024, and its output still runs through
+  the same local verification as a safety net. The two backends are **different
+  model generations** (hy-image-3.5-wb vs HunyuanImage 3.0), so image style may
   differ slightly.
 - The badge is a **fixed sprite**: neutral-white semi-transparent text anchored
   to the bottom-right corner, identical across prompts and generation paths.
@@ -125,11 +123,7 @@ was already chosen.
 
 ### Path 1 · Hybrid — 本地去水印 (default)
 
-1. **Confirm credits** — generation consumes roughly 5-10 credits (same as
-   `ImageGen`). Removal itself is free. (Already covered by the Step 0
-   question; just proceed.)
-
-2. **Generate with the built-in `ImageGen` tool** — exactly as you would
+1. **Generate with the built-in `ImageGen` tool** — exactly as you would
    when calling `ImageGen` directly, with NO changes introduced by this
    skill: optimize and expand the user's prompt into a rich visual
    description (subject, style, lighting, composition, quality), then pass
@@ -137,20 +131,17 @@ was already chosen.
    revision switch, Hunyuan) so the backend revises the prompt too — the
    same behavior as a plain `ImageGen` call. This skill adds ONLY two
    things to the generation flow: the path question (Step 0) and the
-   post-generation badge removal (step 4). Nothing else may differ from a
-   direct `ImageGen` call. Any size works (the badge geometry is derived
-   from the output size and refined by a local search); `1024x1024` is
-   merely the calibrated reference size and therefore the fastest path
-   (it skips the search). The platform's credit confirmation and consumption
-   statistics happen at this step — do not replace it with a direct API call
-   unless the user explicitly asked for that. Do not bother with the `footnote`
-   parameter: tested, no effect on the badge.
+   post-generation badge removal (step 3). Nothing else may differ from a
+   direct `ImageGen` call. The platform's credit confirmation and
+   consumption statistics happen at this step — do not replace it with a
+   direct API call unless the user explicitly asked for that. Do not
+   bother with the `footnote` parameter: tested, no effect on the badge.
 
-3. **Locate the generated file** — take the output path from the ImageGen
+2. **Locate the generated file** — take the output path from the ImageGen
    result. If the result is only a URL, download it to a local `.png` first
    (plain GET, e.g. with `urllib`).
 
-4. **Remove the badge locally** (no credits, no network):
+3. **Remove the badge locally** (no credits, no network):
 
 ```bash
 python <SKILL_DIR>/scripts/badge_removal.py \
@@ -166,18 +157,16 @@ python <SKILL_DIR>/scripts/badge_removal.py \
   `verify` (`ncc`, `grad_x`, `grad_y` — the three cleanliness gates),
   `searched` (whether the geometry search ran), `changed_pixels`.
 
-5. **Verify the result (mandatory)**:
-   1. Check `clean == true` in the JSON report. This flag is true only when
-      the output-side verification (badge-brightness NCC, sprite-gradient
-      NCC and carved-dent check on the OUTPUT corner) finds no remaining
-      badge-shaped pattern. The re-compositing residual
+4. **Verify the result (mandatory)**:
+   1. Check `clean == true` in the JSON report (the three output-side
+      gates described in the Overview). The re-compositing residual
       (`max_residual <= 2/255`) is a weaker, necessary-but-not-sufficient
       consistency check — never deliver on the residual alone.
    2. Open the clean file with the Read tool and visually confirm the
       bottom-right corner is clean and the image looks untouched.
    3. Only then deliver the image with `present_files`.
 
-6. **Handle failures** — read the report's `tier` and `method`:
+5. **Handle failures** — read the report's `tier` and `method`:
    - `tier: "none"`, `method: "no-badge-detected"` — no badge pattern in the
      corner (e.g. a white badge on a white background is invisible, or the
      image was already clean). The file is delivered unmodified and
@@ -199,9 +188,9 @@ python <SKILL_DIR>/scripts/badge_removal.py \
 Use when the user chose 原生无水印 in Step 0 (`--path native`), or explicitly
 wants to skip the confirmation flow, or the built-in ImageGen is unavailable.
 
-1. **Confirm credits** — same ~5-10 per image; on the native path additionally
-   tell the user this path shows no confirmation card and no consumption
-   statistics.
+1. **Confirm credits** — same cost as Path 1 (covered in Step 0); on the
+   native path additionally tell the user this path shows no confirmation
+   card and no consumption statistics.
 
 2. **Obtain a token** — call `connect_cloud_service` once and read
    `clientTempToken` from the result. Pass it to the script via `--token`.
@@ -224,8 +213,7 @@ Options:
 
 - `--path` — generation backend: `local` (default) or `native`.
   - `local`: miora workbuddy-proxy API + local badge removal. **Any size**
-    (badge geometry is derived from the output size and refined by a local
-    search; the result is always verified, see step 4).
+    (always verified, see step 4).
   - `native`: native Hunyuan AIART API with the official `LogoAdd=0`
     parameter — the server adds no watermark, so no removal is needed
     (expected report: `tier: "none"`, `changed_pixels: 0`). Constraints:
@@ -245,12 +233,12 @@ The script prints a JSON report on stdout with `clean_path`,
 `clean` flag. Exit code 0 means the pipeline ran; it does NOT by itself
 guarantee cleanliness.
 
-4. **Verify the result (mandatory)** — same as Path 1 step 5, using the JSON
+4. **Verify the result (mandatory)** — same as Path 1 step 4, using the JSON
    report's `clean` flag and `watermark_removal.tier`. On the native path the
    removal report is expected to be `tier: "none"` (the server added no
    badge); if a badge-shaped pattern IS found there, it goes through the
    same exact removal and three-gate verification as the local path. The
-   visual corner check (step 5.2) remains mandatory on both paths — it is
+   visual corner check (step 4.2) remains mandatory on both paths — it is
    the only guard against a differently-styled watermark the sprite detector
    cannot recognize.
 
@@ -273,7 +261,7 @@ guarantee cleanliness.
   + local geometry search for non-calibrated sizes, presence gate, exact
   sprite subtraction, optional ghost correction, and a three-gate output-side
   verification (badge-brightness NCC, sprite-gradient NCC, carved-dent check).
-  Also runnable standalone (Path 1 step 4): `--input` (required),
+  Also runnable standalone (Path 1 step 3): `--input` (required),
   `--output` (default `<input>_clean.png`), `--force-offset X,Y`. Pure local
   computation: no network, no credits.
 - `generate_clean_image.py` — Path 2 pipeline: generate (miora

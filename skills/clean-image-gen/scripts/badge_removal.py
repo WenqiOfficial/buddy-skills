@@ -155,21 +155,16 @@ PRESENCE_NCC = 0.35
 PRESENCE_EXCESS = 3.0
 # ghost correction trigger on the output image
 GHOST_CORRECT_NCC = 0.30
-# output-side verification thresholds (best match over the neighborhood).
-# Three INDEPENDENT gates, because no single statistic separates every
-# failure mode from a perfect removal (measured on real generations,
-# synthetic gradients and constructed controls - see module docstring):
-#   pos-NCC  - badge-shaped BRIGHTNESS aligned with the sprite. Catches
-#              untouched / partially removed / under-alpha badges.
-#   grad-NCC - the residue's correlation with the sprite's spatial
-#              GRADIENT. A one-pixel geometry error leaves bright
-#              crescents next to carved dents - i.e. the sprite's edge
-#              pattern - which decorrelates from the sprite itself.
-#   carved   - a strongly negative ghost NCC: a badge-shaped dark dent
-#              from over-subtraction, invisible to the bright-only gates.
-# The stroke EXCESS is deliberately NOT a gate: the true content under
-# the badge is unknowable, and bright content there (a lantern, snow)
-# fakes a large excess after a perfect removal.
+# output-side verification thresholds (best match over the neighborhood):
+#   pos-NCC  - badge-shaped BRIGHTNESS aligned with the sprite (catches
+#              untouched / partially removed / under-alpha badges)
+#   grad-NCC - correlation with the sprite's spatial GRADIENT (a one-pixel
+#              geometry error leaves the sprite's edge pattern as residue)
+#   carved   - strongly negative ghost NCC (a badge-shaped dark dent from
+#              over-subtraction, invisible to the bright-only gates)
+# The stroke EXCESS is deliberately NOT a gate (unknowable content under
+# the badge; bright content there fakes a large excess). Measured gate
+# separations: see the module docstring's "Verdict data" table.
 VERIFY_NCC_STRICT = 0.35
 VERIFY_NCC_VISUAL = 0.45
 VERIFY_GRAD = 0.30
@@ -212,14 +207,7 @@ def load_registry():
                 raise ValueError("sprite asset mismatch: %s" % b["file"])
             bases.append({"min": b["min"], "alpha": bytes(spx),
                           "w": bw, "h": bh, "window": None})
-    # reference window (legacy fast path for the calibrated square size)
-    ref = None
-    for b in reg["bases"]:
-        if "window" in b and b.get("min") == reg["law"]["base"]:
-            sw, sh, _, spx, _ = read_png(os.path.join(ASSETS_DIR, b["file"]))
-            ref = {"w": sw, "h": sh, "spx": spx,
-                   "ox": b["window"][0], "oy": b["window"][1]}
-    _registry_cache = {"law": reg["law"], "bases": bases, "ref": ref}
+    _registry_cache = {"law": reg["law"], "bases": bases}
     return _registry_cache
 
 
@@ -366,11 +354,6 @@ def base_sprite_for(w, h, registry):
     if (m["w"], m["h"]) == (bw, bh):
         return m["alpha"], m["w"], m["h"], True
     return scale_badge(m["alpha"], m["w"], m["h"], bw, bh), bw, bh, False
-
-
-def source_base_for(w, h, registry):
-    """The master base every resampled sprite for (w, h) derives from."""
-    return master_base(registry)
 
 
 def subtract_sprite(px, w, h, ch, alpha, aw, ah, ox, oy, color=(255, 255, 255)):
@@ -542,15 +525,12 @@ def window_metrics(gray, w, h, alpha, aw, ah, ox, oy, ring=14, plane=None):
     any gray buffer (input or output) - the ring around the window is
     outside any subtraction area, so input and output agree there.
 
-    local_bg is a per-pixel background model rather than a constant: the
-    badge sits on real image content whose brightness varies across the
-    window (gradients, shading), and a constant background leaves that
-    trend in the excess map, where it drowns the badge signal (the
-    resampled sprites of small scales have blurred, low-alpha strokes)
-    and fakes a residual after a perfect removal. A least-squares plane
-    fitted on the clean ring around the window removes the trend (see
-    fit_plane / bg_model); a degenerate fit falls back to the ring
-    median. Pass a shared plane to reuse one fit across a search.
+    local_bg is a per-pixel background model (least-squares plane on the
+    clean ring, see bg_model) rather than a constant: a constant leaves
+    the content's brightness trend in the excess map, where it drowns the
+    badge signal (small scales have blurred, low-alpha strokes) and fakes
+    a residual after a perfect removal. Pass a shared plane to reuse one
+    fit across a search.
 
     The excess map fed to the NCC is clipped at zero: a white badge only
     BRIGHTENS the content, so negative excursions are content noise, not
@@ -583,16 +563,6 @@ def window_metrics(gray, w, h, alpha, aw, ah, ox, oy, ring=14, plane=None):
     denom = ((n * aa - sa * sa) * (n * bb - sb * sb)) ** 0.5
     ncc = (n * ab - sa * sb) / denom if denom > 1e-9 else 0.0
     return ncc, ex_sum / max(ex_cnt, 1)
-
-
-def presence_score(px, w, h, ch, alpha, aw, ah, ox, oy, ring=14):
-    """Badge-presence evidence on the INPUT at the predicted position.
-
-    Returns (ncc, stroke_excess): correlation of (v - local_bg) with the
-    sprite alpha, and the mean brightness lift on stroke pixels.
-    """
-    gray = _gray(px, w, h, ch)
-    return window_metrics(gray, w, h, alpha, aw, ah, ox, oy, ring)
 
 
 def _ghost_from_window(wgray, alpha, aw, ah, bg):
@@ -633,23 +603,6 @@ def _window_gray(buf, w, ch, ox, oy, aw, ah):
             wg[y * aw + x] = ((buf[o] + buf[o + 1] + buf[o + 2]) // 3
                               if ch >= 3 else buf[o])
     return wg
-
-
-def ghost_metrics(out_gray, w, h, alpha, aw, ah, ox, oy, ring=14):
-    """Remaining badge-shaped pattern in the OUTPUT.
-
-    Returns (mean_excess, p95_excess, ncc, bg). A correct removal leaves
-    mean ~ 0 and ncc ~ 0 (no badge-shaped bright pattern) - but a
-    MISALIGNED removal also scores ~0 here while remaining visible, which
-    is why remove_watermark() verifies with a neighborhood search.
-    """
-    bg = bg_model(out_gray, w, h, ox, oy, aw, ah, ring)
-    wg = bytearray(aw * ah)
-    for y in range(ah):
-        for x in range(aw):
-            wg[y * aw + x] = out_gray[(oy + y) * w + (ox + x)]
-    mean_ex, p95, ncc = _ghost_from_window(wg, alpha, aw, ah, bg)
-    return mean_ex, p95, ncc, bg
 
 
 def _blur3(src, aw, ah):
@@ -1042,9 +995,8 @@ def remove_watermark(image_path, out_path, force_offset=None):
                             "dx": v[2], "dy": v[3],
                             "grad_x": round(v[4], 4),
                             "grad_y": round(v[5], 4)}
-        # NOTE: the dent check is diagnostic only (see module docstring).
-        # Three independent gates clear a removal (measured separations
-        # in the module docstring):
+        # NOTE: the dent check is diagnostic only. Three independent gates
+        # clear a removal (measured separations in the module docstring):
         #   pos-NCC  - no badge-shaped brightness aligned with the sprite
         #   grad-NCC - no sprite-gradient signature (1px geometry errors)
         #   carved   - ghost NCC >= -0.45 (no badge-shaped dark dent)
@@ -1075,7 +1027,7 @@ def remove_watermark(image_path, out_path, force_offset=None):
     if force_offset is not None:
         ox, oy = force_offset
         alpha, aw, ah, _ = base_sprite_for(w, h, registry)
-        src = source_base_for(w, h, registry)
+        src = master_base(registry)
         gray = _gray(px, w, h, ch)
         plane = fit_plane(gray, w, h, max(0, ox - 16), max(0, oy - 16),
                           min(w, ox + aw + 16), min(h, oy + ah + 16),
@@ -1096,7 +1048,7 @@ def remove_watermark(image_path, out_path, force_offset=None):
     # ---- matches a calibrated scale) ----
     s, bw, bh, ox, oy = predict_geometry(w, h, law)
     alpha, aw, ah, exact = base_sprite_for(w, h, registry)
-    src = source_base_for(w, h, registry)
+    src = master_base(registry)
     report["scale"] = round(s, 4)
     report["badge_size"] = [bw, bh]
     report["sprite_exact"] = exact
