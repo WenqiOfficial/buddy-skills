@@ -17,7 +17,13 @@
       "file": "badge_sprite.png",
       "window": [840, 910, 184, 114],
       "badge": [63, 53, 111, 51],
-      "note": "calibrated from a pure-black generation at 1024x1024"
+      "note": "calibrated from a pure-black generation at 1024x1024; MASTER BASE - the server renders the badge at 1024 and resamples (lanczos-class filter) to every other size, verified by cross-resampling all three calibrated bases (meanAE 1.69/255 at s=0.75, 2026-10-23)"
+    },
+    {
+      "min": 2048,
+      "file": "badge_sprite_s200.png",
+      "size": [222, 102],
+      "note": "calibrated from a pure-black generation at 2048x2048 (s=2.0); peak alpha 139 vs 142 at the master (resampling lowers the peak)"
     }
   ]
 }

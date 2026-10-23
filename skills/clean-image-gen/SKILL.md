@@ -2,10 +2,10 @@
 name: clean-image-gen
 display_name: 无水印AI生图（双路径）
 display_name_en: Watermark-Free AI Image (Dual-Path)
-version: 2.0.0
+version: 2.1.0
 agent_created: true
-description: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
-description_zh: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
+description: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸（1024 母版 + lanczos 缩放复刻服务端渲染管线，非校准尺寸 alpha 误差约 1.7/255）；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径；生图本身与直接调用 ImageGen 完全一致（提示词正常优化）。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
+description_zh: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸（1024 母版 + lanczos 缩放复刻服务端渲染管线，非校准尺寸 alpha 误差约 1.7/255）；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径；生图本身与直接调用 ImageGen 完全一致（提示词正常优化）。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
 description_en: Watermark-free AI image generation (dual-path). Path 1 (default) — generate with the same WorkBuddy backend as the built-in ImageGen tool (model hy-image-3.5-wb), then remove the server-side "AI生成 / WORKBUDDY" badge locally by exact sprite subtraction; every pixel outside the badge is preserved bit-for-bit and any size is supported. Path 2 (--path native) — call the native Hunyuan AIART API with the official LogoAdd=0 parameter so the server adds no watermark at all (each side 512-2048, area <= 1024x1024). Always ask the user which path to use before generating. Triggers — watermark-free, no watermark, generate an image, AI drawing, clean image. Not for removing watermarks from user-supplied existing images (use buddy-image-processing erase), video (VideoGen), or 3D models (buddy-multimodal-generation).
 ---
 
@@ -44,6 +44,19 @@ Key facts established by investigation of the backend:
   offsets again) on the input before subtracting. **Every resolution is
   supported** — 512x512 through 3000x2000, square/portrait/landscape alike
   (validated by `selftest.py` and a 21-size sweep).
+- The sprite follows a **master-at-1024 pipeline**: the server rasterizes
+  the master badge once at the 1024 base and resamples it to every output
+  size with a lanczos-class filter. Measured by cross-resampling three
+  real calibrations (short sides 1024 / 768 / 2048): master→s=0.75 matches
+  the real badge to meanAE 1.69/255, while the s=2.0 badge resampled back
+  to 1024 matches only 5.87 — i.e. the 2048 badge is a **resampled copy of
+  the master, not a sharper master**. The removal therefore performs the
+  same single operation: one lanczos resample of the 1024 master for any
+  non-calibrated size (the old bilinear approximation was 2.6x worse;
+  chaining resamples — "highest-resolution master" — is measurably worse
+  still). Calibrated bases exist for short sides 768, 1024 and 2048; those
+  sizes skip the search entirely. On the real 1280x1280 badge this cut the
+  verification residue by ~37% and the misalignment signature to zero.
 - Because the sprite is fixed, removal is **exact math**, not generative
   inpainting: invert the alpha compositing
   `stamped = (1-a)*original + a*255` to recover `original`. Only the ~3k badge
@@ -77,6 +90,13 @@ Key facts established by investigation of the backend:
 
 ## Workflow
 
+**Scope of this skill (inviolable)**: compared with calling `ImageGen`
+directly, this skill changes exactly two things — (1) it asks which path
+to use before generating (Step 0), and (2) it removes and verifies the
+badge after generation. The generation step itself — prompt optimization
+and expansion, `revise`, size/quality/style — must remain a plain
+`ImageGen` call with no behavioral change.
+
 ### Step 0 · Ask the user which path (mandatory before generating)
 
 **Before any generation**, if the user has not already stated a preference,
@@ -109,10 +129,18 @@ was already chosen.
    `ImageGen`). Removal itself is free. (Already covered by the Step 0
    question; just proceed.)
 
-2. **Generate with the built-in `ImageGen` tool** — pass the user's prompt
-   (verbatim) plus size/quality. Any size works (the badge geometry is
-   derived from the output size and refined by a local search); `1024x1024`
-   is merely the calibrated reference size and therefore the fastest path
+2. **Generate with the built-in `ImageGen` tool** — exactly as you would
+   when calling `ImageGen` directly, with NO changes introduced by this
+   skill: optimize and expand the user's prompt into a rich visual
+   description (subject, style, lighting, composition, quality), then pass
+   it with size/quality. Also pass `revise: true` (the ImageGen prompt-
+   revision switch, Hunyuan) so the backend revises the prompt too — the
+   same behavior as a plain `ImageGen` call. This skill adds ONLY two
+   things to the generation flow: the path question (Step 0) and the
+   post-generation badge removal (step 4). Nothing else may differ from a
+   direct `ImageGen` call. Any size works (the badge geometry is derived
+   from the output size and refined by a local search); `1024x1024` is
+   merely the calibrated reference size and therefore the fastest path
    (it skips the search). The platform's credit confirmation and consumption
    statistics happen at this step — do not replace it with a direct API call
    unless the user explicitly asked for that. Do not bother with the `footnote`
@@ -258,7 +286,9 @@ guarantee cleanliness.
 ### assets/
 
 - `badge_sprites.json` — sprite registry: the geometric law, the calibrated
-  bases (short side 768 and 1024) and the reference window.
+  bases (short sides 768, 1024 and 2048) and the reference window. The
+  1024 base is the **master**: every non-calibrated size is derived from
+  it by one lanczos resample, reproducing the server's own pipeline.
 - `badge_sprite.png` — grayscale alpha map of the 1024-base badge sprite
   (extracted once from a pure-black reference generation; on black, badge
   pixel value equals `alpha * 255`).
@@ -268,6 +298,9 @@ guarantee cleanliness.
   from a real 768 generation.
 - `badge_sprite_1792x768.png` / `.json` — the 1792x768 calibration capture
   (s = 0.75, landscape orientation).
+- `badge_sprite_s200.png` — the 2048-short-side (s = 2.0) base, calibrated
+  from a real 2048x2048 pure-black generation (peak alpha 139 vs the
+  master's 142 — resampling lowers the peak).
 
 ## Recalibrating the sprite
 
@@ -275,17 +308,28 @@ If the backend ever changes the badge (new text, position, size or color),
 presence scores will collapse and `clean` will flip to false. To recalibrate:
 
 1. Generate a pure-black reference image (prompt: a completely black image,
-   nothing else) at the target size through this same pipeline.
+   nothing else) at **1024x1024 — the master size** — through this same
+   pipeline (`--keep-raw` keeps the watermarked original). Optionally add a
+   2048x2048 capture as a second exact base.
 2. Locate the badge: pixels above near-zero brightness in the bottom-right
    quadrant give the alpha map directly (`alpha = value / 255`); verify the
    badge pixels are color-neutral (R=G=B, white sprite). The badge window is
    the bounding box of those pixels minus a small margin.
 3. Add/replace the base in `assets/badge_sprites.json` (and the sprite PNG),
    keeping the law fields (`badge_w`, `badge_h`, `margin`, `base`) in sync
-   with the new sprite's measurements at its reference size.
+   with the new sprite's measurements at its reference size. Keep the 1024
+   entry the master: every other size derives from it.
 4. Validate with `python selftest.py` (synthetic, zero cost) and on at least
    two real generations at different sizes: `clean == true`, tier `strict`,
    and zero changed pixels outside the sprite window.
+
+Why not calibrate the highest possible resolution as the master: the
+server itself renders the master at 1024 and resamples down/up with a
+lanczos-class filter, so a higher-resolution capture is just another
+resampled copy — deriving target sizes from it chains two resamplings and
+matches the real badge *worse* (measured: 2048→1024 meanAE 5.87 vs
+1024→768 meanAE 1.69). One master at 1024 plus one same-class resample is
+the closest reproduction of the server's own pipeline.
 
 As an alternative to recalibration, the `--path native` backend
 (`LogoAdd=0`) does not depend on the badge sprite at all.

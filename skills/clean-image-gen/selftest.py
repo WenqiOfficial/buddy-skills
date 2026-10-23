@@ -99,8 +99,13 @@ def run_case(w, h):
         if os.path.exists(clean):
             _, _, _, px2, _ = read_png(clean)
             diff = max(abs(px2[i] - px[i]) for i in range(len(px)))
+            # 8-bit quantization limit: stamping rounds to integers, and
+            # recovering divides by (1-af) - at the badge's peak alpha
+            # (142/255, af=0.557) a 0.5 rounding loss amplifies to ~1.13,
+            # plus the recovery round -> worst case 2. max_residual
+            # (re-compositing consistency) is the tighter check.
             check("%dx%d: recovered ~= original (rounding only)" % (w, h),
-                  diff <= 1, "max abs diff = %d" % diff)
+                  diff <= 2, "max abs diff = %d" % diff)
             outside = sum(
                 1 for i in range(len(px))
                 if not (ox <= (i // 3) % w < ox + aw

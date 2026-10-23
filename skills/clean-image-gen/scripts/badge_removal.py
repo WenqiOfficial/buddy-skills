@@ -21,6 +21,22 @@ true badge is 140x64 at (1128,1204) while the law predicts 139x64 at
 and leaves a clearly visible residue, so non-calibrated sizes run a local
 geometry search before subtracting (see below).
 
+The server's rendering pipeline (measured 2026-10-23 on three real
+pure-black calibrations - 111x51 at s=1.0, 83x38 at s=0.75, 222x102 at
+s=2.0 - by cross-resampling them against each other):
+
+    the master badge is rasterized ONCE at the 1024 base, then resampled
+    to every other output size with a lanczos-class filter
+
+Evidence: master->s=0.75 by lanczos matches the real s=0.75 badge to
+meanAE 1.69/255 (NCC 0.9992), while the s=2.0 badge resampled back to
+1024 matches at only 5.87 - i.e. the 2048 badge is a RESAMPLED COPY of
+the master, not a higher-resolution master itself. A "highest-resolution
+master" scheme would chain two resamplings (master->2048->target) and is
+measurably worse than one master->target resample. This module therefore
+always resamples the 1024 master directly, with the same lanczos filter
+class the server uses (bilinear was 4.38 - 2.6x the error).
+
 Removal inverts the alpha compositing exactly:
     stamped = (1 - a) * original + a * 255
     =>  original = (stamped - a * 255) / (1 - a)
@@ -34,8 +50,10 @@ The re-compositing residual is NOT a cleanliness proof: the inverse
 operation reproduces the input exactly wherever no clamping occurs, so a
 wrong alpha at a bright pixel still yields residual ~ 0 while leaving a
 visible ghost (an under-estimated alpha) or carving a dark badge-shaped
-dent (an over-estimated one). The server also re-rasterizes the badge at
-each output size, so a resampled sprite is never alpha-exact.
+dent (an over-estimated one). The server resamples its master badge per
+output size, so even a same-filter resample is never alpha-exact (a
+lanczos match of the real s=0.75 badge still shows meanAE 1.69/255 from
+8-bit quantization and kernel differences).
 
 Worse, a MISALIGNED subtraction decorrelates the residue from the sprite:
 the leftover pattern is the difference of two shifted badges, so its ghost
@@ -117,6 +135,7 @@ left behind), so it must not gate the verdict.
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -218,40 +237,121 @@ def predict_geometry(w, h, law):
     return s, bw, bh, ox, oy
 
 
+_LANCZOS_A = 3.0
+_taps_cache = {}
+
+
+def _sinc(x):
+    if x == 0.0:
+        return 1.0
+    return math.sin(math.pi * x) / (math.pi * x)
+
+
+def _lanczos_kernel(x, a=_LANCZOS_A):
+    if x == 0.0:
+        return 1.0
+    if x <= -a or x >= a:
+        return 0.0
+    return _sinc(x) * _sinc(x / a)
+
+
+def _resample_taps(n_in, n_out):
+    """Per-output-pixel (xmin, weights) taps, PIL-resize compatible.
+
+    Reproduces PIL's ImagingResample for LANCZOS (a=3): the kernel is
+    stretched by the downscale factor (filterscale), taps are clamped to
+    the source and renormalized (edge replication), 8-bit rounding at the
+    end. The server's badge resampling is lanczos-class (measured against
+    the real s=0.75 calibration: meanAE 1.69/255 vs bilinear's 4.38), so
+    matching this filter minimizes the alpha error of our approximation.
+    """
+    key = (n_in, n_out)
+    hit = _taps_cache.get(key)
+    if hit is not None:
+        return hit
+    scale = n_in / float(n_out)
+    fs = scale if scale > 1.0 else 1.0
+    support = _LANCZOS_A * fs
+    taps = []
+    for o in range(n_out):
+        center = (o + 0.5) * scale - 0.5
+        xmin = int(center - support + 0.5)
+        if xmin < 0:
+            xmin = 0
+        xmax = int(center + support + 0.5)
+        if xmax > n_in - 1:
+            xmax = n_in - 1
+        ww = [_lanczos_kernel((x - center) / fs) for x in range(xmin, xmax + 1)]
+        s = sum(ww)
+        if s > 0.0:
+            ww = [w / s for w in ww]
+        taps.append((xmin, ww))
+    _taps_cache[key] = taps
+    return taps
+
+
 def scale_badge(alpha, bw0, bh0, bw, bh):
-    """Bilinear resample of a badge alpha map (cached per target size)."""
+    """Lanczos (a=3) resample of a badge alpha map (cached per target size).
+
+    Separable: horizontal pass then vertical pass, both using
+    PIL-compatible taps (see _resample_taps). One resample of the 1024
+    master reproduces the server's own master->size operation, so the
+    alpha error stays at quantization level (~1.7/255 measured).
+    """
     if (bw, bh) == (bw0, bh0):
         return alpha
     key = (bw0, bh0, bw, bh)
     hit = _scale_cache.get(key)
     if hit is not None:
         return hit
+    taps_x = _resample_taps(bw0, bw)
+    tmp = [0.0] * (bh0 * bw)
+    for y in range(bh0):
+        row = y * bw0
+        orow = y * bw
+        for xo in range(bw):
+            xmin, ww = taps_x[xo]
+            acc = 0.0
+            for i, w in enumerate(ww):
+                acc += w * alpha[row + xmin + i]
+            tmp[orow + xo] = acc
+    taps_y = _resample_taps(bh0, bh)
     out = bytearray(bw * bh)
-    for y in range(bh):
-        fy = (y + 0.5) * bh0 / bh - 0.5
+    for yo in range(bh):
+        ymin, ww = taps_y[yo]
+        base = yo * bw
         for x in range(bw):
-            fx = (x + 0.5) * bw0 / bw - 0.5
-            x0 = int(fx // 1)
-            y0 = int(fy // 1)
-            x1 = min(bw0 - 1, x0 + 1)
-            y1 = min(bh0 - 1, y0 + 1)
-            x0 = max(0, x0)
-            y0 = max(0, y0)
-            tx = fx - x0
-            ty = fy - y0
-            v00 = alpha[y0 * bw0 + x0]
-            v01 = alpha[y0 * bw0 + x1]
-            v10 = alpha[y1 * bw0 + x0]
-            v11 = alpha[y1 * bw0 + x1]
-            v = (v00 * (1 - tx) * (1 - ty) + v01 * tx * (1 - ty) +
-                 v10 * (1 - tx) * ty + v11 * tx * ty)
-            out[y * bw + x] = int(round(v))
+            acc = 0.0
+            for i, w in enumerate(ww):
+                acc += w * tmp[(ymin + i) * bw + x]
+            iv = int(acc + 0.5)
+            if iv < 0:
+                iv = 0
+            elif iv > 255:
+                iv = 255
+            out[base + x] = iv
     _scale_cache[key] = out
     return out
 
 
+def master_base(registry):
+    """The calibrated base the server rendered the badge from (1024)."""
+    law = registry["law"]
+    for b in registry["bases"]:
+        if b["min"] == law.get("base", 1024):
+            return b
+    return registry["bases"][0]
+
+
 def base_sprite_for(w, h, registry):
-    """Calibrated sprite for the short side, resampled to the predicted size.
+    """Sprite for the short side: calibrated base when one matches exactly,
+    otherwise ONE lanczos resample of the 1024 master.
+
+    The server renders the master badge at the 1024 base and resamples it
+    to every output size, so resampling the master with the same filter
+    class is the closest possible approximation of the server's own
+    sprite. (Chaining resamples - nearest calibrated base first - doubles
+    the error for small sizes and was measurably worse.)
 
     Returns (alpha, aw, ah, exact) where exact is True when a calibrated
     sprite matches the predicted size directly.
@@ -259,28 +359,18 @@ def base_sprite_for(w, h, registry):
     law = registry["law"]
     _, bw, bh, _, _ = predict_geometry(w, h, law)
     mn = min(w, h)
-    best = None
     for b in registry["bases"]:
         if b["min"] == mn and (b["w"], b["h"]) == (bw, bh):
             return b["alpha"], b["w"], b["h"], True
-        d = abs(b["min"] - mn)
-        if best is None or d < best[0]:
-            best = (d, b)
-    b = best[1]
-    if (b["w"], b["h"]) == (bw, bh):
-        return b["alpha"], b["w"], b["h"], True
-    return scale_badge(b["alpha"], b["w"], b["h"], bw, bh), bw, bh, False
+    m = master_base(registry)
+    if (m["w"], m["h"]) == (bw, bh):
+        return m["alpha"], m["w"], m["h"], True
+    return scale_badge(m["alpha"], m["w"], m["h"], bw, bh), bw, bh, False
 
 
 def source_base_for(w, h, registry):
-    """The calibrated base a resampled sprite for (w, h) derives from."""
-    mn = min(w, h)
-    best = None
-    for b in registry["bases"]:
-        d = abs(b["min"] - mn)
-        if best is None or d < best[0]:
-            best = (d, b)
-    return best[1]
+    """The master base every resampled sprite for (w, h) derives from."""
+    return master_base(registry)
 
 
 def subtract_sprite(px, w, h, ch, alpha, aw, ah, ox, oy, color=(255, 255, 255)):
