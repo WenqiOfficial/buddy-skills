@@ -1,16 +1,22 @@
 ---
 name: clean-image-gen
-description: Generate images through WorkBuddy's own image backend (miora workbuddy-proxy / Hunyuan hy-image-3.5-wb, the same backend as the built-in ImageGen tool) and guarantee the output contains no visible watermark. The backend stamps a fixed semi-transparent "AI生成 / WORKBUDDY" badge into the bottom-right corner of every image; this skill removes it by exact sprite subtraction, preserving every other pixel bit-for-bit, and verifies removal mathematically. An optional second backend calls the native Hunyuan AIART API with the official LogoAdd=0 parameter, so the server adds no watermark at all (each side 512-2048, area <= 1024x1024; verified 2026-10-23). Use this skill when the user asks for watermark-free / clean image generation, complains that default generated images carry a watermark, or wants generated images without the AI badge. Do NOT use this skill for removing watermarks from user-supplied existing images (use buddy-image-processing erase), for video generation (VideoGen), or for 3D models (buddy-multimodal-generation).
+display_name: 无水印AI生图（双路径）
+display_name_en: Watermark-Free AI Image (Dual-Path)
+version: 2.0.0
 agent_created: true
+description: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
+description_zh: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
+description_en: Watermark-free AI image generation (dual-path). Path 1 (default) — generate with the same WorkBuddy backend as the built-in ImageGen tool (model hy-image-3.5-wb), then remove the server-side "AI生成 / WORKBUDDY" badge locally by exact sprite subtraction; every pixel outside the badge is preserved bit-for-bit and any size is supported. Path 2 (--path native) — call the native Hunyuan AIART API with the official LogoAdd=0 parameter so the server adds no watermark at all (each side 512-2048, area <= 1024x1024). Always ask the user which path to use before generating. Triggers — watermark-free, no watermark, generate an image, AI drawing, clean image. Not for removing watermarks from user-supplied existing images (use buddy-image-processing erase), video (VideoGen), or 3D models (buddy-multimodal-generation).
 ---
 
-# Clean Image Gen
+# 无水印 AI 生图（双路径）
 
 ## Overview
 
 Generate an image with WorkBuddy's standard image backend and deliver it with the
 visible "AI生成 / WORKBUDDY>" badge removed, while keeping the image itself
-pixel-identical everywhere else.
+pixel-identical everywhere else. An optional second backend generates with no
+watermark at all.
 
 Key facts established by investigation of the backend:
 
@@ -26,7 +32,9 @@ Key facts established by investigation of the backend:
   clean, sprite detector `tier: "none"`). Both cost the same credits (one
   generation); the native path is limited to each side in [512, 2048] and
   area <= 1024x1024, and its output still runs through the same local
-  verification as a safety net.
+  verification as a safety net. The two backends are **different model
+  generations** (hy-image-3.5-wb vs HunyuanImage 3.0), so image style may
+  differ slightly.
 - The badge is a **fixed sprite**: neutral-white semi-transparent text anchored
   to the bottom-right corner, identical across prompts and generation paths.
 - Its geometry follows a **law of the short side**: `s = min(W,H)/1024`, badge
@@ -56,30 +64,50 @@ Key facts established by investigation of the backend:
 
 ## Routing Rules
 
-- Use this skill when the user wants a **newly generated image without a
-  watermark** (e.g. "生成一张没有水印的图", "default 生图有水印，帮我做一张干净的").
+- Use this skill whenever the user wants a **newly generated image** and no
+  visible watermark matters — e.g. "生成一张没有水印的图", "帮我画一只猫",
+  "生成图片", "AI画图", "default 生图有水印，帮我做一张干净的". For plain
+  generation requests without any watermark mention, this skill is still the
+  right choice: it delivers the same image minus the badge.
 - Do NOT use this skill when the user wants to remove a watermark from an
   **existing image** — that is `buddy-image-processing` (`--operation erase`).
-- Do NOT use this skill when the user accepts the default watermark — call
-  `ImageGen` directly instead.
+- Do NOT use this skill when the user **explicitly wants the default
+  watermarked image** — call `ImageGen` directly instead (rare).
 - Do NOT use this skill for video (`VideoGen`) or 3D (`buddy-multimodal-generation`).
 
 ## Workflow
 
-Two execution paths share the same local removal core:
+### Step 0 · Ask the user which path (mandatory before generating)
 
-- **Path 1 (default) — hybrid**: generate with the built-in `ImageGen` tool,
-  then strip the badge locally. The user keeps the platform's native credit
-  confirmation card and consumption statistics.
-- **Path 2 (fallback) — direct API**: one script does generate + download +
-  removal in a single command. No confirmation card, no statistics entry;
-  credits are still charged to the account. Use only when the user explicitly
-  wants to skip the confirmation flow, or the built-in ImageGen is unavailable.
+**Before any generation**, if the user has not already stated a preference,
+ASK with the `AskUserQuestion` tool — offer exactly these two options:
 
-### Path 1 · Hybrid (default)
+- **本地去水印（默认推荐）** — 用与内置 ImageGen 相同的后端（模型
+  `hy-image-3.5-wb`，最新一代）生成，再本地精确减除右下角水印徽章：除徽章
+  约 3k 像素外逐字节不变；支持任意尺寸（512×512 到 3000×2000）；保留平台
+  积分确认卡片与消耗统计。
+- **原生无水印** — 走原生混元 AIART 接口并传 `LogoAdd=0`，服务端直接不加水印
+  （模型为 HunyuanImage 3.0，上一代，画面风格可能略有差异）；限单边
+  512–2048、面积 ≤ 1024×1024；无积分确认卡片。
 
-1. **Inform about credits** — generation consumes roughly 5-10 credits (same as
-   `ImageGen`). Tell the user before proceeding. Removal itself is free.
+告诉用户：**两条路径积分成本相同**（各 1 次生成，约 5–10 积分）。
+
+Route by the answer:
+
+- 选「本地去水印」→ **Path 1**（默认）。
+- 选「原生无水印」→ **Path 2** 并加 `--path native`。
+- 用户明确要求跳过确认卡片/消耗统计，或内置 ImageGen 不可用 → **Path 2**
+  （`--path local` 或 `--path native`）。
+
+Skip the question only when the user already specified a path (e.g. "用原生
+那个", "走本地去水印"), or when re-generating after a failure where the path
+was already chosen.
+
+### Path 1 · Hybrid — 本地去水印 (default)
+
+1. **Confirm credits** — generation consumes roughly 5-10 credits (same as
+   `ImageGen`). Removal itself is free. (Already covered by the Step 0
+   question; just proceed.)
 
 2. **Generate with the built-in `ImageGen` tool** — pass the user's prompt
    (verbatim) plus size/quality. Any size works (the badge geometry is
@@ -138,10 +166,14 @@ python <SKILL_DIR>/scripts/badge_removal.py \
      it; do not silently re-encode. Ask the user before trying Path 2 (which
      downloads the backend's raw file and may still be a PNG).
 
-### Path 2 · Direct API (fallback)
+### Path 2 · Direct API — 直连脚本
 
-1. **Inform about credits** — same ~5-10 per image; additionally tell the user
-   this path shows no confirmation card and no consumption statistics.
+Use when the user chose 原生无水印 in Step 0 (`--path native`), or explicitly
+wants to skip the confirmation flow, or the built-in ImageGen is unavailable.
+
+1. **Confirm credits** — same ~5-10 per image; on the native path additionally
+   tell the user this path shows no confirmation card and no consumption
+   statistics.
 
 2. **Obtain a token** — call `connect_cloud_service` once and read
    `clientTempToken` from the result. Pass it to the script via `--token`.
@@ -156,6 +188,7 @@ python <SKILL_DIR>/scripts/generate_clean_image.py \
   --prompt "<user prompt, verbatim>" \
   --token "<clientTempToken>" \
   --size 1024x1024 \
+  --path <local|native> \
   --output-dir "<absolute output directory>"
 ```
 
@@ -170,10 +203,7 @@ Options:
     (expected report: `tier: "none"`, `changed_pixels: 0`). Constraints:
     each side in [512, 2048] and `width*height <= 1024x1024`; outside that
     range the script fails fast with `NATIVE_SIZE_UNSUPPORTED` — rerun with
-    `--path local`. Prefer it when the user wants the simplest possible path
-    or when the local sprite pipeline would need recalibration; prefer
-    `local` for sizes outside the native range or when maximum proven
-    robustness matters (27-case regression + 21-size sweep).
+    `--path local`.
 - `--size` — `WIDTHxHEIGHT`, default `1024x1024` (supported range depends on
   `--path`, see above).
 - `--quality` — optional passthrough (e.g. `standard`, `hd`); omit for default.
@@ -200,6 +230,9 @@ guarantee cleanliness.
    - `AUTH_EXPIRED`: refresh the token via `connect_cloud_service` and rerun.
    - `NO_RESULT` / `TASK_FAILED` / `POLL_TIMEOUT`: report the failure; do not
      resubmit in a tight loop.
+   - `NATIVE_SIZE_UNSUPPORTED`: the requested size exceeds the native API
+     constraints — rerun with `--path local` (any size) or ask the user for a
+     smaller size.
    - `clean == false` with `tier: "unverified"`: the image is delivered
      unmodified and may still carry the badge — do not deliver it as clean.
      Regenerate (any size), or report the failure.
@@ -253,3 +286,6 @@ presence scores will collapse and `clean` will flip to false. To recalibrate:
 4. Validate with `python selftest.py` (synthetic, zero cost) and on at least
    two real generations at different sizes: `clean == true`, tier `strict`,
    and zero changed pixels outside the sprite window.
+
+As an alternative to recalibration, the `--path native` backend
+(`LogoAdd=0`) does not depend on the badge sprite at all.

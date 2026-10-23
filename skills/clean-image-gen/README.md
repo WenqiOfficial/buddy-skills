@@ -2,7 +2,7 @@
 
 > 本 skill 是 [buddy-skills](../../README.md) 合集的一部分。
 
-生成**无可见水印**图片的 WorkBuddy skill：用 WorkBuddy 官方图像后端生成图片，然后以精确的 sprite 减法去掉服务端盖在右下角的 "AI生成 / WORKBUDDY" 徽章——除徽章像素外，图像逐字节不变。另提供**可选的原生 API 路径**（`LogoAdd=0`）：服务端根本不加水印，无需本地减除（限单边 512-2048、面积 ≤ 1024×1024）。
+**无水印 AI 生图（双路径）**：用 WorkBuddy 官方图像后端生成图片，以精确的 sprite 减法去掉服务端盖在右下角的 "AI生成 / WORKBUDDY" 徽章——除徽章像素外，图像逐字节不变。另提供**可选的原生 API 路径**（`LogoAdd=0`）：服务端根本不加水印，无需本地减除（限单边 512-2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径。
 
 ## 原理
 
@@ -41,7 +41,16 @@ clean-image-gen/
 
 ### 作为 WorkBuddy skill 安装
 
-将整个目录放入 `~/.workbuddy/skills/clean-image-gen/`（用户级）或项目的 `.workbuddy/skills/`（项目级）。之后对 WorkBuddy 说"生成一张没有水印的图"即可触发。
+将整个目录放入 `~/.workbuddy/skills/clean-image-gen/`（用户级）或项目的 `.workbuddy/skills/`（项目级）。之后对 WorkBuddy 说"生成一张没有水印的图"、"帮我画一只猫"、"生成图片"等即可触发。
+
+**触发后会先询问路径**（用户已明确指定则跳过）：
+
+| 选项 | 说明 |
+|------|------|
+| 本地去水印（默认推荐） | 内置同款后端（模型 `hy-image-3.5-wb`，最新一代）生成 + 本地精确减除；任意尺寸；保留积分确认卡片 |
+| 原生无水印 | AIART 接口 `LogoAdd=0`，服务端不加水印；模型为 HunyuanImage 3.0；限单边 512-2048、面积 ≤ 1024×1024；无确认卡片 |
+
+两条路径积分成本相同（各 1 次生成，约 5-10 积分）。
 
 默认走**混合路径**：调用内置 ImageGen 生图（保留平台原生的积分确认卡片与消耗统计）→ 对产出文件只做本地去水印。直连 API 路径（`generate_clean_image.py`）作为备选保留，可用 `--path native` 切换到原生 AIART 后端（`LogoAdd=0`，服务端不加水印；限单边 512-2048、面积 ≤ 1024×1024，超出会报 `NATIVE_SIZE_UNSUPPORTED` 并提示改用默认 `--path local`）。
 
