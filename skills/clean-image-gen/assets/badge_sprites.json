@@ -20,6 +20,12 @@
       "note": "calibrated from a pure-black generation at 1024x1024; MASTER BASE - the server renders the badge at 1024 and resamples (lanczos-class filter) to every other size, verified by cross-resampling all three calibrated bases (meanAE 1.69/255 at s=0.75, 2026-10-23)"
     },
     {
+      "min": 1072,
+      "file": "badge_sprite_s1047.png",
+      "size": [116, 53],
+      "note": "calibrated from a pure-black generation at 1920x1072 (s=1.047, the common 16:9 full-HD size); the resampled master left a faint visible residue here (alpha ~4% thin), this base removes it exactly; peak alpha 139"
+    },
+    {
       "min": 2048,
       "file": "badge_sprite_s200.png",
       "size": [222, 102],

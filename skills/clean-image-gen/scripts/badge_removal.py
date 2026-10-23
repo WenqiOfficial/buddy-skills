@@ -90,12 +90,24 @@ Pipeline per image (all local, no network, no credits):
      value, i.e. the recovered content, NOT the ring background, which
      underestimates the correction on bright content) and the best
      iteration is kept.
-  6. verify       - the OUTPUT is searched over the same neighborhood for
+  6. alpha-scale correction (only when a badge-shaped bright residue
+     survives: content-NCC > 0.15 AND mean residue >= 1.5 grey levels
+     over the strokes) - a systematically thin sprite (the server
+     re-rasterizes the badge at some scales instead of resampling the
+     1024 master, measured at 1920x1072, s=1.047) is corrected by
+     sweeping a global scale (1.00-1.25) at the fixed geometry and
+     keeping the least-residue scale, capped at a 2-grey-level dark
+     dent. The magnitude gate matters: the content map's median
+     residual is tied to the alpha mask, so a PERFECT removal on smooth
+     content scores NCC 0.24-0.31 with only 0.2 grey levels of residue
+     - correlation alone would false-trigger there (real textured
+     content decorrelates it: 13 real samples, NCC <= 0.10).
+  7. verify       - the OUTPUT is searched over the same neighborhood for
      any badge-shaped pattern (best-match pos-NCC and stroke excess).
      This is the real cleanliness proof: it catches misaligned or
      partial removals whose residue decorrelates from the sprite at the
      subtracted position.
-  7. verdict      - three independent gates must all pass (see the
+  8. verdict      - three independent gates must all pass (see the
      "Verdict data" table below): the best-match pos-NCC, the strongest
      sprite-GRADIENT correlation among badge-like candidates (a one-pixel
      geometry error leaves the sprite's edge pattern as residue), and the
@@ -105,7 +117,7 @@ Pipeline per image (all local, no network, no credits):
      clean = false and tier "unverified" - a missed badge is never passed
      off as a cleaned image. No badge at all => delivered unmodified,
      clean = true, tier "none".
-  8. dent check   - diagnostic only (see below).
+  9. dent check   - diagnostic only (see below).
 
 Verdict data (real generations, synthetic gradients and constructed
 controls, plane background):
@@ -175,6 +187,53 @@ DENT_FLOOR = 1.0
 # ghost correction
 CORRECT_DAMP = 0.85
 CORRECT_ITERS = 4
+# global alpha-scale correction. A resampled sprite can be systematically
+# too "thin": the server re-rasterizes the badge at some scales rather
+# than resampling the 1024 master, so the true alpha runs up to ~10%
+# higher (measured: 1920x1072, s=1.047 - the residue is a faint
+# badge-shaped brightening, only a few grey levels). The ghost trigger
+# above cannot see it (the ghost NCC at the subtracted position stays
+# ~0.04 because the ring plane sits well below the window's real
+# content), so when the first pass leaves a badge-shaped brightness at
+# the final geometry, sweep the scale and keep the least-residue
+# result. The sweep scores against a SELF-BOOTSTRAPPED content model -
+# the low-alpha pixels of the first-pass output are untouched original
+# content, unbiased by the stamp - because the ring plane sits far
+# below bright content and its error fakes both residue and dents.
+# The sweep only ever THICKENS the sprite (k >= 1): the trigger below
+# requires a bright residue, so a too-thick sprite cannot reach it, and
+# a mixed bright/dark leftover is a content-model artifact that more
+# alpha would only worsen.
+ALPHA_SCALE_TRIGGER = 0.15
+# Magnitude gate next to the correlation trigger above, in grey levels
+# (mean over the sprite's stroke pixels, vs the content model). NOT
+# redundant: the content map's median residual is geometrically tied to
+# the alpha mask, so a PERFECT removal on smooth content still scores
+# NCC 0.24-0.31 (synthetic gradients) - correlation alone would
+# false-trigger there. Real textured content decorrelates that residual
+# (13 real samples: NCC <= 0.10, residues up to 5.9 from content the
+# map simply cannot see under the strokes). The genuine thin-sprite
+# residue measured 3.98, so 1.5 separates the two by 5x on both sides.
+ALPHA_SCALE_RESIDUE = 1.5
+# Over-subtraction cap: the sweep may not carve a mean dark dent deeper
+# than this over the stroke pixels. Two grey levels is invisible. The
+# old signed-NCC gate (-0.75) admitted ~9-level dents because the NCC
+# is diluted by the sprite's zero-alpha majority - a magnitude cap on
+# the physical quantity is the honest guard.
+ALPHA_SCALE_DENT = 2.0
+# A scale is adopted only when it shrinks the mean residue by this much
+ALPHA_SCALE_GAIN = 0.3
+# alpha threshold defining "stroke" pixels for the residue/dent means
+STROKE_ALPHA = 60
+ALPHA_SCALE_LO = 1.00
+ALPHA_SCALE_HI = 1.25
+ALPHA_SCALE_STEP = 0.025
+# over-subtraction gate on the content-model SIGNED NCC: beyond this the
+# sweep trades a faint bright residue for a faint dark one, which is no
+# longer an improvement (the ring-plane carved gate cannot be reused
+# here - it fires already at k~1.05 on bright content because the ring
+# plane underestimates the content by tens of grey levels)
+ALPHA_SCALE_CARVED = 0.75
 # geometry search (input side) and verification search (output side)
 SEARCH_OFFSET = 3
 SEARCH_SIZE = 1
@@ -712,6 +771,135 @@ def correct_alpha(px, w, h, ch, alpha, aw, ah, ox, oy, bg):
     return best[1], best[2], best[3]
 
 
+def _content_map(wg_out, alpha, aw, ah, r=3, amax=12):
+    """Per-pixel content estimate under the badge, from a first-pass output.
+
+    The subtraction never touches pixels with alpha below ALPHA_FLOOR, so
+    the low-alpha pixels of the first-pass output ARE original content -
+    unbiased by the stamp, unlike any ring-plane extrapolation (which
+    sits far below bright content and whose error fakes both residue and
+    carved dents). Each pixel takes the median over its low-alpha
+    neighbourhood; a pixel whose whole neighbourhood is stroke (inside a
+    thick glyph) falls back to its own first-pass value, which is itself
+    a recovered-content estimate.
+    """
+    ce = [0.0] * (aw * ah)
+    for y in range(ah):
+        for x in range(aw):
+            vals = []
+            for dy in range(-r, r + 1):
+                ny = y + dy
+                if ny < 0 or ny >= ah:
+                    continue
+                for dx in range(-r, r + 1):
+                    nx = x + dx
+                    if nx < 0 or nx >= aw:
+                        continue
+                    if alpha[ny * aw + nx] < amax:
+                        vals.append(wg_out[ny * aw + nx])
+            if not vals:
+                vals = [wg_out[y * aw + x]]
+            vals.sort()
+            ce[y * aw + x] = float(vals[len(vals) // 2])
+    return ce
+
+
+def _window_ncc(wg, bg, alpha, aw, ah, clip=True):
+    """NCC of a window's excess vs a sprite alpha map.
+
+    wg/bg/alpha are aw*ah buffers for the SAME window. With clip the
+    excess is clipped at zero like the presence metric (a white badge
+    only brightens); without clip the signed excess is used, which also
+    sees badge-shaped DARK dents (over-subtraction) - the alpha-scale
+    sweep needs that, because scaling too far trades a faint bright
+    residue for a faint dark one and the clipped metric cannot tell.
+    """
+    n = aw * ah
+    sa = sb = saa = sbb = sab = 0.0
+    for j in range(n):
+        e = wg[j] - bg[j]
+        a_ = alpha[j]
+        if clip and e < 0:
+            e = 0
+        sa += e
+        sb += a_
+        saa += e * e
+        sbb += a_ * a_
+        sab += e * a_
+    d = ((n * saa - sa * sa) * (n * sbb - sb * sb)) ** 0.5
+    return (n * sab - sa * sb) / d if d > 1e-9 else 0.0
+
+
+def _stroke_excess(wg, bg, alpha, aw, ah, clip=False):
+    """Mean excess over the sprite's stroke pixels (alpha >= STROKE_ALPHA).
+
+    wg/bg/alpha are aw*ah buffers for the SAME window. Signed, this is
+    the physical residue: positive when the sprite is too thin (bright
+    leftover), negative when the subtraction carved a dark dent. With
+    clip, only the bright side counts - the visible residue magnitude.
+    Strokes are where watermark residue lives; the badge's low-alpha
+    halo is dominated by content, not by the stamp.
+    """
+    acc = 0.0
+    n = 0
+    for i in range(aw * ah):
+        if alpha[i] < STROKE_ALPHA:
+            continue
+        e = wg[i] - bg[i]
+        if clip and e < 0:
+            e = 0.0
+        acc += e
+        n += 1
+    return acc / n if n else 0.0
+
+
+def search_alpha_scale(px, w, h, ch, alpha, aw, ah, ox, oy, content,
+                       base_excess, base_ncc,
+                       lo=ALPHA_SCALE_LO, hi=ALPHA_SCALE_HI,
+                       step=ALPHA_SCALE_STEP):
+    """Sweep a global alpha scale; keep the least-residue safe result.
+
+    Scores each scale at the FIXED final geometry against the
+    self-bootstrapped content model. The selection statistic is the
+    mean SIGNED excess over the stroke pixels: it is zero when the
+    scaled sprite matches the stamp that produced the image, positive
+    when the sprite is still too thin, negative when the sweep has
+    carved a dark dent - so the least absolute value is the physical
+    best scale. A scale is eligible only while that mean stays above
+    -ALPHA_SCALE_DENT (a two-grey-level dent is invisible; more is a
+    visible artifact). The clipped correlation NCC is reported for
+    diagnostics but is NOT the selection criterion: over-subtraction
+    drives it to its noise floor by clipping the dent away, so
+    minimizing it systematically over-subtracts (measured: it picks
+    k=1.05-1.25 where the true scale is 1.01).
+
+    One step costs one subtraction plus two window metrics. Returns
+    (k, scaled_alpha, mean_excess, clip_ncc); k == 1.0 with the input
+    alpha when no scale is eligible or beats the unscaled pass.
+    """
+    def scaled_by(k):
+        sp = bytearray(aw * ah)
+        for i in range(aw * ah):
+            v = alpha[i] * k
+            sp[i] = 254 if v > 254 else (0 if v < 0 else int(round(v)))
+        return sp
+
+    best = (1.0, alpha, base_excess, base_ncc)
+    n_steps = int(round((hi - lo) / step))
+    for i in range(n_steps + 1):
+        k = lo + i * step
+        sp = scaled_by(k)
+        out, _, _, _ = subtract_sprite(px, w, h, ch, sp, aw, ah, ox, oy)
+        wg = _window_gray(out, w, ch, ox, oy, aw, ah)
+        ex = _stroke_excess(wg, content, alpha, aw, ah)
+        if ex < -ALPHA_SCALE_DENT:
+            continue  # carving a visible dark dent: not an improvement
+        ncc = _window_ncc(wg, content, sp, aw, ah, clip=True)
+        if abs(ex) < abs(best[2]) - 1e-9:
+            best = (k, sp, ex, ncc)
+    return best
+
+
 def _hf_energy(buf, w, h, ch, x0, y0, x1, y1, excl=None):
     """Mean |v - box3(v)| over a rect (high-frequency energy, 0..255)."""
     ex0 = ey0 = ex1 = ey1 = -1
@@ -937,6 +1125,7 @@ def remove_watermark(image_path, out_path, force_offset=None):
         "badge_detected": False,
         "presence": None,
         "sprite_offset": None,
+        "alpha_scale": None,
         "changed_pixels": 0,
         "max_residual": None,
         "mean_residual": None,
@@ -1002,7 +1191,13 @@ def remove_watermark(image_path, out_path, force_offset=None):
         #   carved   - ghost NCC >= -0.45 (no badge-shaped dark dent)
         # The stroke excess is NOT a gate: the content under the badge is
         # unknowable and bright content there fakes a large excess.
-        carved = cand["g_ncc"] < -VERIFY_NCC_VISUAL
+        # After an alpha-scale correction the ghost NCC is read against
+        # the content model instead of the ring plane (the ring plane
+        # underestimates bright content by tens of grey levels), which
+        # warrants the wider ALPHA_SCALE_CARVED limit.
+        carved = cand["g_ncc"] < -(ALPHA_SCALE_CARVED
+                                   if report.get("alpha_scale")
+                                   else VERIFY_NCC_VISUAL)
         grad_ok = abs(v[4]) <= VERIFY_GRAD and abs(v[5]) <= VERIFY_GRAD
         if not carved and v[0] <= VERIFY_NCC_STRICT and grad_ok:
             return finish(cand["out"], method, True, "strict", True)
@@ -1075,8 +1270,11 @@ def remove_watermark(image_path, out_path, force_offset=None):
     # badge is 140x64 at (1128,1204) while the law says 139x64 at
     # (1129,1204). Subtracting one pixel off leaves a visible residue
     # whose pattern decorrelates from the sprite, so the geometry is
-    # refined locally before subtracting. Calibrated sizes skip this:
-    # their sprites are exact and validated.
+    # refined locally before subtracting. Calibrated sizes normally skip
+    # the full search, but even they keep a +/-1 offset refinement: the
+    # law's rounding can still land a pixel off (measured at 1920x1072,
+    # s=1.047: true badge at law+1 - a 1px misalignment of an exact
+    # sprite scores grad -0.71 and fails verification).
     searched = False
     if not exact:
         p_ncc0, _ = window_metrics(gray, w, h, alpha, aw, ah, ox, oy,
@@ -1091,6 +1289,22 @@ def remove_watermark(image_path, out_path, force_offset=None):
             ox, oy, aw, ah, alpha = nox, noy, cw, chh, ca
             searched = True
             method += "+searched"
+    else:
+        p_ncc0, _ = window_metrics(gray, w, h, alpha, aw, ah, ox, oy,
+                                   plane=plane)
+        best_ex = (p_ncc0, ox, oy)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                n, _ = window_metrics(gray, w, h, alpha, aw, ah,
+                                      ox + dx, oy + dy, plane=plane)
+                if n > best_ex[0]:
+                    best_ex = (n, ox + dx, oy + dy)
+        if best_ex[0] > p_ncc0 + 0.005:
+            ox, oy = best_ex[1], best_ex[2]
+            searched = True
+            method += "+offset-refined"
     report["searched"] = searched
 
     # ---- stage 2: presence gate: never subtract without badge evidence
@@ -1132,6 +1346,48 @@ def remove_watermark(image_path, out_path, force_offset=None):
         if cand["score"] < best["score"]:
             best = cand
             method += "+corrected(%d)" % iters
+
+    # ---- stage 4.5: global alpha-scale correction (under-subtraction).
+    # The ghost trigger above needs a STRONG ghost, but a systematically
+    # thin sprite (the server re-rasterizes the badge at some output
+    # scales instead of resampling the 1024 master) leaves only a few
+    # grey levels of residue: clearly visible in the corner, yet the
+    # ghost NCC at the subtracted position stays ~0.04 because the ring
+    # plane sits well below the window's real content. The self-
+    # bootstrapped content NCC catches it; when it does, sweep the alpha
+    # scale at the fixed geometry and keep the least-residue result.
+    # Two independent conditions gate the sweep: a badge-SHAPED bright
+    # leftover (correlation) that is also big enough to see (mean grey
+    # levels over the strokes). The magnitude gate is not redundant -
+    # the content map's median residual is tied to the alpha mask, so
+    # a PERFECT removal on smooth content scores NCC 0.24-0.31 with a
+    # residue of only 0.2 grey levels (measured on synthetic
+    # gradients); real textured content decorrelates it (13 real
+    # samples: NCC <= 0.10).
+    wg0 = _window_gray(best["out"], w, ch, best["ox"], best["oy"],
+                       best["aw"], best["ah"])
+    content = _content_map(wg0, best["alpha"], best["aw"], best["ah"])
+    n0 = _window_ncc(wg0, content, best["alpha"], best["aw"], best["ah"])
+    r0 = _stroke_excess(wg0, content, best["alpha"], best["aw"], best["ah"])
+    if n0 > ALPHA_SCALE_TRIGGER and r0 >= ALPHA_SCALE_RESIDUE:
+        k, sp, rk, nk = search_alpha_scale(
+            px, w, h, ch, best["alpha"], best["aw"], best["ah"],
+            best["ox"], best["oy"], content, r0, n0)
+        if abs(rk) < abs(r0) - ALPHA_SCALE_GAIN:
+            cand = _evaluate(px, w, h, ch, sp, best["aw"], best["ah"],
+                             best["ox"], best["oy"], plane, gray)
+            # re-read the carved gate against the content model: the ring
+            # plane underestimates bright content by tens of grey levels
+            # and would reject a merely ~10 grey-level correction
+            csn = _window_ncc(
+                _window_gray(cand["out"], w, ch, cand["ox"], cand["oy"],
+                             cand["aw"], cand["ah"]),
+                content, sp, cand["aw"], cand["ah"], clip=False)
+            if csn >= -ALPHA_SCALE_CARVED:
+                cand["g_ncc"] = csn
+                best = cand
+                method += "+alpha-scaled(%.3f)" % k
+                report["alpha_scale"] = round(k, 3)
 
     # ---- stages 5-7: verify + verdict
     return verdict(best, method, src)

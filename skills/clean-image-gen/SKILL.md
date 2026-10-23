@@ -2,7 +2,7 @@
 name: clean-image-gen
 display_name: 无水印AI生图（双路径）
 display_name_en: Watermark-Free AI Image (Dual-Path)
-version: 2.1.0
+version: 2.2.0
 agent_created: true
 description: 无水印 AI 生图（双路径）。为用户生成不带水印的图片：路径一（默认）用与内置 ImageGen 相同的 WorkBuddy 生图后端（模型 hy-image-3.5-wb）生成，再以精确 sprite 减法本地去除右下角「AI生成 / WORKBUDDY」徽章——除徽章像素外逐字节不变，支持任意尺寸（1024 母版 + lanczos 缩放复刻服务端渲染管线，非校准尺寸 alpha 误差约 1.7/255）；路径二（--path native）调用原生混元 AIART 接口的官方 LogoAdd=0 参数，服务端直接不加水印（限单边 512–2048、面积 ≤ 1024×1024）。生成前会询问用户使用哪条路径；生图本身与直接调用 ImageGen 完全一致（提示词正常优化）。触发词：无水印、无水印生图、生成图片、生成一张图、AI画图、生图、生成不带水印的图、干净的图、没有水印。不适用：给用户已有的图片去水印（用 buddy-image-processing erase）、视频生成（VideoGen）、3D 模型（buddy-multimodal-generation）。
 description_en: Watermark-free AI image generation (dual-path). Path 1 (default) — generate with the same WorkBuddy backend as the built-in ImageGen tool (model hy-image-3.5-wb), then remove the server-side "AI生成 / WORKBUDDY" badge locally by exact sprite subtraction; every pixel outside the badge is preserved bit-for-bit and any size is supported. Path 2 (--path native) — call the native Hunyuan AIART API with the official LogoAdd=0 parameter so the server adds no watermark at all (each side 512-2048, area <= 1024x1024). Always ask the user which path to use before generating. Triggers — watermark-free, no watermark, generate an image, AI drawing, clean image. Not for removing watermarks from user-supplied existing images (use buddy-image-processing erase), video (VideoGen), or 3D models (buddy-multimodal-generation).
@@ -258,9 +258,12 @@ guarantee cleanliness.
 ### scripts/
 
 - `badge_removal.py` — local badge removal: geometric law (short-side scale)
-  + local geometry search for non-calibrated sizes, presence gate, exact
-  sprite subtraction, optional ghost correction, and a three-gate output-side
-  verification (badge-brightness NCC, sprite-gradient NCC, carved-dent check).
+  + local geometry search for non-calibrated sizes (±1 offset refinement even
+  at calibrated sizes), presence gate, exact sprite subtraction, optional
+  ghost correction, optional global alpha-scale correction (under-subtraction
+  at scales where the server re-rasterizes the badge), and a three-gate
+  output-side verification (badge-brightness NCC, sprite-gradient NCC,
+  carved-dent check).
   Also runnable standalone (Path 1 step 3): `--input` (required),
   `--output` (default `<input>_clean.png`), `--force-offset X,Y`. Pure local
   computation: no network, no credits.
@@ -274,7 +277,7 @@ guarantee cleanliness.
 ### assets/
 
 - `badge_sprites.json` — sprite registry: the geometric law, the calibrated
-  bases (short sides 768, 1024 and 2048) and the reference window. The
+  bases (short sides 768, 1024, 1072 and 2048) and the reference window. The
   1024 base is the **master**: every non-calibrated size is derived from
   it by one lanczos resample, reproducing the server's own pipeline.
 - `badge_sprite.png` — the 1024 master: grayscale window capture (the badge
@@ -286,6 +289,12 @@ guarantee cleanliness.
 - `badge_sprite_s200.png` — the 2048-short-side (s = 2.0) base, calibrated
   from a real 2048x2048 pure-black generation (peak alpha 139 vs the
   master's 142 — resampling lowers the peak).
+- `badge_sprite_s1047.png` — the 1072-short-side (s = 1.047, i.e.
+  1920x1072) base, calibrated from a real 1920x1072 pure-black generation.
+  At that scale the server re-rasterizes the badge instead of resampling
+  the master (measured alpha ~0.8% higher and the geometry one pixel off
+  the law), which left a faint visible residue that no resampled sprite
+  could remove; this base removes it exactly (verify NCC 0.32 → 0.05).
 
 ## Recalibrating the sprite
 
