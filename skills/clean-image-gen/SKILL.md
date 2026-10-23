@@ -1,6 +1,6 @@
 ---
 name: clean-image-gen
-description: Generate images through WorkBuddy's own image backend (miora workbuddy-proxy / Hunyuan hy-image-3.5-wb, the same backend as the built-in ImageGen tool) and guarantee the output contains no visible watermark. The backend stamps a fixed semi-transparent "AI生成 / WORKBUDDY" badge into the bottom-right corner of every image; this skill removes it by exact sprite subtraction, preserving every other pixel bit-for-bit, and verifies removal mathematically. Use this skill when the user asks for watermark-free / clean image generation, complains that default generated images carry a watermark, or wants generated images without the AI badge. Do NOT use this skill for removing watermarks from user-supplied existing images (use buddy-image-processing erase), for video generation (VideoGen), or for 3D models (buddy-multimodal-generation).
+description: Generate images through WorkBuddy's own image backend (miora workbuddy-proxy / Hunyuan hy-image-3.5-wb, the same backend as the built-in ImageGen tool) and guarantee the output contains no visible watermark. The backend stamps a fixed semi-transparent "AI生成 / WORKBUDDY" badge into the bottom-right corner of every image; this skill removes it by exact sprite subtraction, preserving every other pixel bit-for-bit, and verifies removal mathematically. An optional second backend calls the native Hunyuan AIART API with the official LogoAdd=0 parameter, so the server adds no watermark at all (each side 512-2048, area <= 1024x1024; verified 2026-10-23). Use this skill when the user asks for watermark-free / clean image generation, complains that default generated images carry a watermark, or wants generated images without the AI badge. Do NOT use this skill for removing watermarks from user-supplied existing images (use buddy-image-processing erase), for video generation (VideoGen), or for 3D models (buddy-multimodal-generation).
 agent_created: true
 ---
 
@@ -18,6 +18,15 @@ Key facts established by investigation of the backend:
   `copilot-image`, model `hy-image-3.5-wb`) on essentially every generation.
   It cannot be disabled through API parameters (`logo_add`, `footnote`, prompt
   instructions such as "no watermark" were all tested and have no effect).
+- **Two generation backends, one cleanliness guarantee**: the default miora
+  workbuddy-proxy backend (badge stamped server-side, removed locally) and an
+  optional **native Hunyuan AIART backend** (`--path native`) where the
+  official `LogoAdd=0` parameter makes the server add **no watermark at all**
+  (verified 2026-10-23 at 1024x1024, 1280x720 and 768x1024 — corner visually
+  clean, sprite detector `tier: "none"`). Both cost the same credits (one
+  generation); the native path is limited to each side in [512, 2048] and
+  area <= 1024x1024, and its output still runs through the same local
+  verification as a safety net.
 - The badge is a **fixed sprite**: neutral-white semi-transparent text anchored
   to the bottom-right corner, identical across prompts and generation paths.
 - Its geometry follows a **law of the short side**: `s = min(W,H)/1024`, badge
@@ -152,20 +161,40 @@ python <SKILL_DIR>/scripts/generate_clean_image.py \
 
 Options:
 
-- `--size` — `WIDTHxHEIGHT`, default `1024x1024`. Any size is supported: the
-  badge geometry is derived from the output size (law of the short side) and
-  refined by a local search; the result is always verified (see step 4).
+- `--path` — generation backend: `local` (default) or `native`.
+  - `local`: miora workbuddy-proxy API + local badge removal. **Any size**
+    (badge geometry is derived from the output size and refined by a local
+    search; the result is always verified, see step 4).
+  - `native`: native Hunyuan AIART API with the official `LogoAdd=0`
+    parameter — the server adds no watermark, so no removal is needed
+    (expected report: `tier: "none"`, `changed_pixels: 0`). Constraints:
+    each side in [512, 2048] and `width*height <= 1024x1024`; outside that
+    range the script fails fast with `NATIVE_SIZE_UNSUPPORTED` — rerun with
+    `--path local`. Prefer it when the user wants the simplest possible path
+    or when the local sprite pipeline would need recalibration; prefer
+    `local` for sizes outside the native range or when maximum proven
+    robustness matters (27-case regression + 21-size sweep).
+- `--size` — `WIDTHxHEIGHT`, default `1024x1024` (supported range depends on
+  `--path`, see above).
 - `--quality` — optional passthrough (e.g. `standard`, `hd`); omit for default.
+- `--seed` — optional random seed (native path only) for reproducible prompts.
 - `--name` — filename slug; defaults to a sanitized prompt prefix.
 - `--keep-raw` — keep the raw watermarked image alongside the clean one.
 - `--output-dir` — defaults to `<cwd>/generated-images`.
 
 The script prints a JSON report on stdout with `clean_path`,
-`watermark_removal` details and an overall `clean` flag. Exit code 0 means the
-pipeline ran; it does NOT by itself guarantee cleanliness.
+`watermark_removal` details, the selected `path`/`backend` and an overall
+`clean` flag. Exit code 0 means the pipeline ran; it does NOT by itself
+guarantee cleanliness.
 
 4. **Verify the result (mandatory)** — same as Path 1 step 5, using the JSON
-   report's `clean` flag and `watermark_removal.tier`.
+   report's `clean` flag and `watermark_removal.tier`. On the native path the
+   removal report is expected to be `tier: "none"` (the server added no
+   badge); if a badge-shaped pattern IS found there, it goes through the
+   same exact removal and three-gate verification as the local path. The
+   visual corner check (step 5.2) remains mandatory on both paths — it is
+   the only guard against a differently-styled watermark the sprite detector
+   cannot recognize.
 
 5. **Handle failures**:
    - `AUTH_EXPIRED`: refresh the token via `connect_cloud_service` and rerun.
@@ -186,8 +215,10 @@ pipeline ran; it does NOT by itself guarantee cleanliness.
   Also runnable standalone (Path 1 step 4): `--input` (required),
   `--output` (default `<input>_clean.png`), `--force-offset X,Y`. Pure local
   computation: no network, no credits.
-- `generate_clean_image.py` — Path 2 pipeline: generate via the miora
-  workbuddy-proxy API, download, remove the badge, verify, report JSON.
+- `generate_clean_image.py` — Path 2 pipeline: generate (miora
+  workbuddy-proxy + local badge removal, or native Hunyuan AIART API with
+  `LogoAdd=0` via `--path native`), download, remove/verify the badge,
+  report JSON. Pure stdlib, no third-party dependencies.
 - `png_codec.py` — pure-stdlib PNG reader/writer that preserves ancillary
   chunks (keeps the TC260 AIGC eXIf metadata intact).
 

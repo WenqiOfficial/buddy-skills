@@ -2,11 +2,12 @@
 
 > 本 skill 是 [buddy-skills](../../README.md) 合集的一部分。
 
-生成**无可见水印**图片的 WorkBuddy skill：用 WorkBuddy 官方图像后端生成图片，然后以精确的 sprite 减法去掉服务端盖在右下角的 "AI生成 / WORKBUDDY" 徽章——除徽章像素外，图像逐字节不变。
+生成**无可见水印**图片的 WorkBuddy skill：用 WorkBuddy 官方图像后端生成图片，然后以精确的 sprite 减法去掉服务端盖在右下角的 "AI生成 / WORKBUDDY" 徽章——除徽章像素外，图像逐字节不变。另提供**可选的原生 API 路径**（`LogoAdd=0`）：服务端根本不加水印，无需本地减除（限单边 512-2048、面积 ≤ 1024×1024）。
 
 ## 原理
 
 - 徽章由服务端固定添加（provider `copilot-image`，model `hy-image-3.5-wb`），无法通过 API 参数关闭（`logo_add`、`footnote`、prompt 里写 "no watermark" 均实测无效）。
+- **双后端**：默认 miora workbuddy-proxy 后端（服务端盖徽章 → 本地减除）；可选 `--path native` 走原生混元 AIART API，其官方 `LogoAdd=0` 参数让**服务端不加水印**（2026-10-23 在 1024×1024 / 1280×720 / 768×1024 三种尺寸实测：角区目检干净、sprite 检测 `tier: "none"`）。两条路径积分成本相同（都是 1 次生成）；原生路径限单边 [512, 2048]、面积 ≤ 1024×1024，产出仍会过同一套本地验证作为保险。
 - 徽章是一张**固定 sprite**：中性白半透明文字，锚定在右下角，跨 prompt、跨生成路径完全一致。
 - 徽章几何遵循**短边定律**：`s = min(W,H)/1024`，徽章尺寸 `(round(111*s), round(51*s))`，边距 `floor(10*s)`，贴右下角。定律预测精度为 ±1 像素，因此非校准尺寸在减除前会先做一次**局部几何搜索**（偏移 ±3 → 尺寸 ±1 → 偏移 ±3，按 badge-NCC 评分）。**所有分辨率均支持**——512×512 到 3000×2000、横竖屏、奇数尺寸均可（selftest 9 尺寸 + 21 尺寸扫描实测通过）。
 - 因此去除是**精确数学**，不是生成式修补：反解 alpha 合成
@@ -42,7 +43,7 @@ clean-image-gen/
 
 将整个目录放入 `~/.workbuddy/skills/clean-image-gen/`（用户级）或项目的 `.workbuddy/skills/`（项目级）。之后对 WorkBuddy 说"生成一张没有水印的图"即可触发。
 
-默认走**混合路径**：调用内置 ImageGen 生图（保留平台原生的积分确认卡片与消耗统计）→ 对产出文件只做本地去水印。直连 API 路径（`generate_clean_image.py`）作为备选保留。
+默认走**混合路径**：调用内置 ImageGen 生图（保留平台原生的积分确认卡片与消耗统计）→ 对产出文件只做本地去水印。直连 API 路径（`generate_clean_image.py`）作为备选保留，可用 `--path native` 切换到原生 AIART 后端（`LogoAdd=0`，服务端不加水印；限单边 512-2048、面积 ≤ 1024×1024，超出会报 `NATIVE_SIZE_UNSUPPORTED` 并提示改用默认 `--path local`）。
 
 ### 作为独立工具使用
 
@@ -70,7 +71,8 @@ python selftest.py
 
 - 仅支持 8-bit 非交错 PNG（灰度/RGB/RGBA/灰阶+Alpha/调色板）。
 - 白徽章盖在纯白内容上时不可见：presence 门控会判"无徽章"并原样交付（正确行为——没有可见水印可去）。
-- 若后端更换徽章（文字/位置/尺寸/颜色），presence 分数会崩塌、`clean` 翻 false——按 `SKILL.md` 末尾 "Recalibrating the sprite" 一节重新校准（注册表已支持多尺寸校准基）。
+- 若后端更换徽章（文字/位置/尺寸/颜色），presence 分数会崩塌、`clean` 翻 false——按 `SKILL.md` 末尾 "Recalibrating the sprite" 一节重新校准（注册表已支持多尺寸校准基）。此时也可改用 `--path native`（`LogoAdd=0`，不依赖徽章 sprite）作为替代路径。
+- 原生路径（`--path native`）受 API 约束：单边 [512, 2048]、面积 ≤ 1024×1024；更大的尺寸请用默认 `--path local`（本地减除，任意尺寸）。
 - 生成式擦除（inpainting）会重编码整张图并明显改变画面，本 skill 不采用也强烈不建议用作此目的。
 
 ## 合规说明
