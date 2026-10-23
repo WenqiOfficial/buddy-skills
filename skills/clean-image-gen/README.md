@@ -31,10 +31,8 @@ clean-image-gen/
 │   └── png_codec.py            # 纯 stdlib PNG 编解码器，保留附属 chunk（eXIf 等）
 ├── assets/
 │   ├── badge_sprites.json      # sprite 注册表：几何定律 + 校准基（短边 768/1024/2048，1024 为母版）
-│   ├── badge_sprite.png        # 1024 母版徽章灰度 alpha 图（从纯黑参考图提取）
-│   ├── badge_sprite.json       # sprite 元数据（偏移、尺寸、参考图尺寸、颜色）
+│   ├── badge_sprite.png        # 1024 母版窗口灰度图（徽章 alpha = 注册表 window/badge 字段裁剪）
 │   ├── badge_sprite_s075.png   # 768 短边（s=0.75）校准基
-│   ├── badge_sprite_1792x768.* # 1792×768 横屏校准采集
 │   └── badge_sprite_s200.png   # 2048 短边（s=2.0）校准基
 ├── selftest.py                 # 零成本自测：9 尺寸合成 + 无徽章 + 非 PNG 拒绝
 └── README.md

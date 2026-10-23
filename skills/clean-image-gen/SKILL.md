@@ -289,15 +289,12 @@ guarantee cleanliness.
   bases (short sides 768, 1024 and 2048) and the reference window. The
   1024 base is the **master**: every non-calibrated size is derived from
   it by one lanczos resample, reproducing the server's own pipeline.
-- `badge_sprite.png` — grayscale alpha map of the 1024-base badge sprite
-  (extracted once from a pure-black reference generation; on black, badge
-  pixel value equals `alpha * 255`).
-- `badge_sprite.json` — sprite metadata: window offset, size, reference image
-  size, sprite color (255,255,255).
+- `badge_sprite.png` — the 1024 master: grayscale window capture (the badge
+  alpha map is the crop given by the registry's `window` / `badge` fields;
+  extracted from a pure-black reference generation, where a badge pixel's
+  value equals `alpha * 255`).
 - `badge_sprite_s075.png` — the 768-short-side (s = 0.75) base, calibrated
-  from a real 768 generation.
-- `badge_sprite_1792x768.png` / `.json` — the 1792x768 calibration capture
-  (s = 0.75, landscape orientation).
+  from a real 768 generation; that size skips the search.
 - `badge_sprite_s200.png` — the 2048-short-side (s = 2.0) base, calibrated
   from a real 2048x2048 pure-black generation (peak alpha 139 vs the
   master's 142 — resampling lowers the peak).
